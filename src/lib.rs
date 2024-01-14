@@ -1,227 +1,197 @@
-use std::iter::{Enumerate, Peekable};
-use std::ops::Range;
-use std::str::Chars;
+use std::hash::BuildHasher;
 
-use winnow::ascii::alphanumeric1;
-use winnow::combinator::{delimited, separated, separated_pair};
-use winnow::error::{ErrMode, InputError, ParseError};
+// use winnow::ascii::alphanumeric1;
+use winnow::error::{InputError, ParseError};
 use winnow::prelude::*;
 use winnow::token::take_while;
+use winnow::{
+    combinator::{delimited, separated, separated_pair},
+    stream::Accumulate,
+};
 
-const SPECIAL_CHARS: [char; 5] = ['=', ',', '{', '}', ':'];
+use ahash::RandomState;
+use indexmap::IndexMap;
+use kstring::KString;
+use ordered_float::OrderedFloat;
 
-fn xd((index, ch): &(usize, char)) -> bool {
-    SPECIAL_CHARS.contains(ch)
+pub type Map<K, V> = IndexMapWrapper<K, V, RandomState>;
+pub type StringKey = KString;
+pub type StringMap<V> = Map<StringKey, V>;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ACF {
+    String(String),
+    Integer(i64),
+    Float(OrderedFloat<f64>),
+    Seq(Vec<ACF>),
+    Map(StringMap<ACF>),
 }
 
-// #[derive(Debug)]
-pub struct Tokenizer<'a> {
-    data: &'a str,
-    // chars: Peekable<Enumerate<Chars<'a>>>,
-    chars: Box<dyn Iterator<Item = (usize, char)> + 'a>,
-    last_char: Option<(usize, char)>,
-    start: usize,
-    stop: bool,
-    next_range: Option<Range<usize>>,
-}
+#[derive(Debug)]
+pub struct IndexMapWrapper<
+    K: std::hash::Hash + std::cmp::Eq,
+    V: std::cmp::Eq,
+    H: std::hash::BuildHasher,
+>(IndexMap<K, V, H>);
 
-impl<'a> Tokenizer<'a> {
-    pub fn new(data: &'a str) -> Self {
-        Tokenizer {
-            data,
-            chars: Box::new(data.chars().enumerate()),
-            last_char: None,
-            start: 0,
-            stop: false,
-            next_range: Some(0..1),
-        }
+impl<K, V, H> PartialEq for IndexMapWrapper<K, V, H>
+where
+    K: std::hash::Hash + std::cmp::Eq,
+    V: std::cmp::Eq,
+    H: std::hash::BuildHasher,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
     }
 }
 
-// impl<'a> Iterator for Tokenizer<'a> {
-//     type Item = Token;
+impl<K, V, H> Eq for IndexMapWrapper<K, V, H>
+where
+    K: std::hash::Hash + std::cmp::Eq,
+    V: std::cmp::Eq,
+    H: std::hash::BuildHasher,
+{
+}
 
-//     fn next(&mut self) -> Option<Self::Item> {
-//         // let range = if let Some(current_range) = self.next_range.take() {
-//         //     current_range
-//         // } else if let Some((current_postion, ch)) = self.chars.next() {
-//         //     let range = self.start..current_postion;
-//         //     self.next_range = Some(current_postion..(current_postion+1));
-//         //     self.start = (current_postion+1);
-//         //     range
-//         // } else {
-//         //     if self.stop {
-//         //         return None;
-//         //     } else {
-//         //         self.stop = true;
-//         //         self.start..self.data.len()
-//         //     }
-//         // };
-//         // let range = if let Some(range) = self.next_range.take() {
-//         //     Some(range)
-//         // } else {
-//         //     let mut range = None;
-//         //     while let Some((index, ch)) = self.chars.next() {
-//         //         if SPECIAL_CHARS.contains(&ch) {
-//         //             if let Some((prev_index, prev_ch)) = self.last_char {
-//         //                 self.next_range = Some(prev_index+1..index);
-//         //                 range = Some(self.start..prev_index+1);
-//         //                 self.last_char = None;
-//         //                 self.start = prev_index;
-//         //                 break;
-//         //             }
-//         //             // range = Some(self.start..index);
-//         //             // self.start = index;
-//         //             // break;
-//         //             self.last_char = Some((index, ch));
-//         //             continue;
-//         //         }
+impl<K, V, H> std::ops::Deref for IndexMapWrapper<K, V, H>
+where
+    K: std::hash::Hash + std::cmp::Eq,
+    V: std::cmp::Eq,
+    H: std::hash::BuildHasher,
+{
+    type Target = IndexMap<K, V, H>;
 
-//         //     }
-//         //     range
-//         // };
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
-//         // dbg!(&range);
+impl<K, V, H> std::ops::DerefMut for IndexMapWrapper<K, V, H>
+where
+    K: std::hash::Hash + std::cmp::Eq,
+    V: std::cmp::Eq,
+    H: std::hash::BuildHasher,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
-//         // let range = range?;
-//         // if range.len() > 1 {
-//         //     return Some(Token {
-//         //         kind: TokenKind::String,
-//         //         range,
-//         //     });
-//         // }
-//         // let kind = match &self.data[range.clone()] {
-//         //     "=" => TokenKind::Assignment,
-//         //     "," => TokenKind::ItemSeperator,
-//         //     "{" => TokenKind::BracketOpen,
-//         //     "}" => TokenKind::BracketClose,
-//         //     ":" => TokenKind::KeySeperator,
-//         //     e => panic!("character left: '{}'", e),
-//         // };
+impl<K, V, H> FromIterator<(K, V)> for IndexMapWrapper<K, V, H>
+where
+    K: std::hash::Hash + std::cmp::Eq,
+    V: std::cmp::Eq,
+    H: std::hash::BuildHasher + Default,
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iterable: I) -> Self {
+        IndexMapWrapper(IndexMap::from_iter(iterable))
+    }
+}
 
-//         // Some(Token { kind, range })
+const SPECIAL_CHARS: [char; 5] = ['=', ',', '{', '}', ':'];
 
-//         if self.stop {
-//             return None;
-//         }
-
-//         let mut start = self.start;
-//         let mut end = self.data.len();
-
-//         while let Some((index, ch)) = self.chars.next() {
-//             end = index;
-
-//             if !SPECIAL_CHARS.contains(&ch) {
-//                 continue;
-//             }
-
-//             if start != end {
-//                 self.start = end + 1;
-//                 break;
-//             }
-//         }
-
-//         if end == self.data.len() {
-//             self.stop = true;
-//         }
-
-//         let range = start..end;
-//         if range.len() > 1 {
-//             return Some(Token {
-//                 kind: TokenKind::String,
-//                 range,
-//             });
-//         }
-//         let kind = match &self.data[range.clone()] {
-//             "=" => TokenKind::Assignment,
-//             "," => TokenKind::ItemSeperator,
-//             "{" => TokenKind::BracketOpen,
-//             "}" => TokenKind::BracketClose,
-//             ":" => TokenKind::KeySeperator,
-//             "" => return None,
-//             e => panic!("character left: '{}'", e),
-//         };
-
-//         Some(Token { kind, range })
-//     }
-// }
+impl<K: std::hash::Hash, V: std::cmp::Eq, S> Accumulate<(K, V)> for IndexMapWrapper<K, V, S>
+where
+    K: std::cmp::Eq + std::hash::Hash,
+    S: BuildHasher + Default,
+{
+    #[inline(always)]
+    fn initial(capacity: Option<usize>) -> Self {
+        let h = S::default();
+        match capacity {
+            Some(capacity) => IndexMapWrapper(IndexMap::with_capacity_and_hasher(capacity, h)),
+            None => IndexMapWrapper(IndexMap::with_hasher(h)),
+        }
+    }
+    #[inline(always)]
+    fn accumulate(&mut self, (key, value): (K, V)) {
+        self.insert(key, value);
+    }
+}
 
 fn value_parser<'s>(input: &mut &'s str) -> PResult<&'s str, InputError<&'s str>> {
     // alphanumeric1.parse_next(input)
     take_while(0.., |ch| !SPECIAL_CHARS.contains(&ch)).parse_next(input)
 }
 
-fn parser4<'s>(input: &mut &'s str) -> PResult<(&'s str, &'s str), InputError<&'s str>> {
-    separated_pair(value_parser, (ws, ":", ws), value_parser).parse_next(input)
+fn key_parser<'s>(input: &mut &'s str) -> PResult<StringKey, InputError<&'s str>> {
+    // alphanumeric1.parse_next(input)
+    take_while(0.., |ch| !SPECIAL_CHARS.contains(&ch))
+        .map(|s| StringKey::from_ref(s))
+        .parse_next(input)
 }
 
-fn parser3<'s>(input: &mut &'s str) -> PResult<Vec<(&'s str, &'s str)>, InputError<&'s str>> {
+fn parser4<'s>(input: &mut &'s str) -> PResult<(StringKey, &'s str), InputError<&'s str>> {
+    separated_pair(key_parser, (ws, ":", ws), value_parser).parse_next(input)
+}
+
+fn parser3<'s, O: Accumulate<(StringKey, &'s str)>>(
+    input: &mut &'s str,
+) -> PResult<O, InputError<&'s str>> {
     separated(0.., parser4, (ws, ",", ws)).parse_next(input)
 }
 
-fn parser2<'s>(input: &mut &'s str) -> PResult<Vec<(&'s str, &'s str)>, InputError<&'s str>> {
+fn parser2<'s, O: Accumulate<(StringKey, &'s str)>>(
+    input: &mut &'s str,
+) -> PResult<O, InputError<&'s str>> {
     delimited(("{", ws), parser3, (ws, "}", ws)).parse_next(input)
 }
 
-fn parser1<'s>(
+fn parser1<'s, O: Accumulate<(StringKey, &'s str)>>(
     input: &mut &'s str,
-) -> PResult<(&'s str, Vec<(&'s str, &'s str)>), InputError<&'s str>> {
-    separated_pair(value_parser, (ws, "=", ws), parser2).parse_next(input)
+) -> PResult<(StringKey, O), InputError<&'s str>> {
+    separated_pair(key_parser, (ws, "=", ws), parser2).parse_next(input)
 }
 
-// fn parser0<'s>(input: &mut &'s str) -> Result<Vec<(&'s str, Vec<(&'s str, &'s str)>)>, ParseError<&'s str, InputError<&'s str>>> {
-fn parser0<'s>(
+fn parser0<'s, P: Accumulate<(StringKey, &'s str)>, O: Accumulate<(StringKey, P)>>(
     input: &mut &'s str,
-) -> PResult<Vec<(&'s str, Vec<(&'s str, &'s str)>)>, InputError<&'s str>> {
+) -> PResult<O, InputError<&'s str>> {
     separated(0.., parser1, (ws, ",", ws)).parse_next(input)
-}
-
-fn ws<'s>(input: &mut &'s str) -> PResult<&'s str, InputError<&'s str>> {
-    // Combinators like `take_while` return a function. That function is the
-    // parser,to which we can pass the input
-    take_while(0.., WS).parse_next(input)
 }
 
 const WS: &[char] = &[' ', '\t', '\r', '\n'];
 
-pub fn parse_flat<'s>(
+fn ws<'s>(input: &mut &'s str) -> PResult<&'s str, InputError<&'s str>> {
+    take_while(0.., WS).parse_next(input)
+}
+
+pub fn parse_vec<'s>(
     data: &mut &'s str,
-) -> Result<Vec<(&'s str, Vec<(&'s str, &'s str)>)>, ParseError<&'s str, InputError<&'s str>>> {
+) -> Result<Vec<(StringKey, Vec<(StringKey, &'s str)>)>, ParseError<&'s str, InputError<&'s str>>> {
     parser0.parse(data)
 }
 
-// fn string_data<'a>(data: &'a mut &str) -> PResult<Token> {
-//     take_while(0.., |ch| !SPECIAL_CHARS.contains(&ch)).map(|input| Token{kind: TokenKind::String, range: 0..1}).parse_next(data)
-// }
-
-#[derive(Debug)]
-pub struct Token {
-    kind: TokenKind,
-    range: Range<usize>,
-}
-
-#[derive(Debug)]
-pub enum TokenKind {
-    String,
-    Assignment,
-    BracketOpen,
-    BracketClose,
-    KeySeperator,
-    ItemSeperator,
+pub fn parse_map<'s>(
+    data: &mut &'s str,
+) -> Result<StringMap<StringMap<&'s str>>, ParseError<&'s str, InputError<&'s str>>> {
+    parser0.parse(data)
 }
 
 #[test]
 fn tokenize_this() {
     let mut data = r#"config1={value: 1, default: 12, yes: true},config2={DEFAULT: "testing"}"#;
     // let mut data = r#"config1={value: 1, default: 12}"#;
-    let out = parse_flat(&mut data).unwrap();
-    let expected = vec![
+    let out = parse_map(&mut data).unwrap();
+    let expected: StringMap<_> = vec![
         (
-            "config1",
-            vec![("value", "1"), ("default", "12"), ("yes", "true")],
+            StringKey::from("config1"),
+            vec![
+                (StringKey::from("value"), "1"),
+                (StringKey::from("default"), "12"),
+                (StringKey::from("yes"), "true"),
+            ]
+            .into_iter()
+            .collect(),
         ),
-        ("config2", vec![("DEFAULT", "\"testing\"")]),
-    ];
+        (
+            StringKey::from("config2"),
+            vec![(StringKey::from("DEFAULT"), "\"testing\"")]
+                .into_iter()
+                .collect(),
+        ),
+    ]
+    .into_iter()
+    .collect();
 
     assert_eq!(out, expected);
 }
