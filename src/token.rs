@@ -1,6 +1,7 @@
 use std::hash::BuildHasher;
 
 // use winnow::ascii::alphanumeric1;
+use winnow::combinator::alt;
 use winnow::prelude::*;
 use winnow::stream::Located;
 use winnow::token::take_while;
@@ -15,12 +16,8 @@ use winnow::{
 
 use ahash::RandomState;
 use indexmap::IndexMap;
-use kstring::KString;
-use ordered_float::OrderedFloat;
 
 pub type Map<K, V> = IndexMapWrapper<K, V, RandomState>;
-pub type StringKey = KString;
-pub type StringMap<V> = Map<StringKey, V>;
 pub type Range = std::ops::Range<usize>;
 pub type RangeMap<V> = Map<Range, V>;
 
@@ -183,47 +180,74 @@ fn range_parser<'s>(input: &mut Located<&'s str>) -> PResult<Range, InputError<L
     primative_parser(input).map(|x| x.into_range())
 }
 
-fn key_parser<'s>(
-    input: &mut Located<&'s str>,
-) -> PResult<StringKey, InputError<Located<&'s str>>> {
-    // alphanumeric1.parse_next(input)
-    take_while(0.., |ch| !SPECIAL_CHARS.contains(&ch))
-        .map(|s| StringKey::from_ref(s))
-        .parse_next(input)
-}
+// fn key_parser<'s>(
+//     input: &mut Located<&'s str>,
+// ) -> PResult<StringKey, InputError<Located<&'s str>>> {
+//     // alphanumeric1.parse_next(input)
+//     take_while(0.., |ch| !SPECIAL_CHARS.contains(&ch))
+//         .map(|s| StringKey::from_ref(s))
+//         .parse_next(input)
+// }
 
-fn parser4<'s>(
+fn map_item_parser<'s>(
     input: &mut Located<&'s str>,
 ) -> PResult<(Range, ACF), InputError<Located<&'s str>>> {
     separated_pair(range_parser, (ws, ":", ws), primative_parser).parse_next(input)
 }
 
-fn parser3<'s>(input: &mut Located<&'s str>) -> PResult<ACF, InputError<Located<&'s str>>> {
+fn seq_item_parser<'s>(input: &mut Located<&'s str>) -> PResult<ACF, InputError<Located<&'s str>>> {
+    primative_parser.parse_next(input)
+}
+
+fn list_item_parser<'s>(
+    input: &mut Located<&'s str>,
+) -> PResult<ACF, InputError<Located<&'s str>>> {
     let start = input.location();
 
-    separated(0.., parser4, (ws, ",", ws))
-        .parse_next(input)
-        .map(|x: RangeMap<ACF>| {
-            let end = input.location();
-            let range = start..end;
-            ACF::Map(range, x)
-        })
+    alt((
+        separated(1.., map_item_parser, (ws, ",", ws)).map(|x: RangeMap<ACF>| either::Left(x)),
+        separated(1.., seq_item_parser, (ws, ",", ws)).map(|x: Vec<ACF>| either::Right(x)),
+    ))
+    .parse_next(input)
+    .map(|options| {
+        let end = input.location();
+        let range = start..end;
+
+        match options {
+            either::Left(x) => ACF::Map(range, x),
+            either::Right(x) => ACF::Seq(range, x),
+        }
+    })
+
+    // separated(0.., map_item_parser, (ws, ",", ws))
+    // .parse_next(input)
+    // .map(|x: RangeMap<ACF>| {
+    //     let end = input.location();
+    //     let range = start..end;
+    //     ACF::Map(range, x)
+    // })
 }
 
-fn parser2<'s>(input: &mut Located<&'s str>) -> PResult<ACF, InputError<Located<&'s str>>> {
-    delimited(("{", ws), parser3, (ws, "}", ws)).parse_next(input)
+fn composite_parser<'s>(
+    input: &mut Located<&'s str>,
+) -> PResult<ACF, InputError<Located<&'s str>>> {
+    delimited(("{", ws), list_item_parser, (ws, "}", ws)).parse_next(input)
 }
 
-fn parser1<'s>(
+fn value_parser<'s>(input: &mut Located<&'s str>) -> PResult<ACF, InputError<Located<&'s str>>> {
+    alt((composite_parser, primative_parser)).parse_next(input)
+}
+
+fn item_parser<'s>(
     input: &mut Located<&'s str>,
 ) -> PResult<(Range, ACF), InputError<Located<&'s str>>> {
-    separated_pair(range_parser, (ws, "=", ws), parser2).parse_next(input)
+    separated_pair(range_parser, (ws, "=", ws), value_parser).parse_next(input)
 }
 
-fn parser0<'s>(input: &mut Located<&'s str>) -> PResult<ACF, InputError<Located<&'s str>>> {
+fn base_parser<'s>(input: &mut Located<&'s str>) -> PResult<ACF, InputError<Located<&'s str>>> {
     let start = input.location();
 
-    separated(0.., parser1, (ws, ",", ws))
+    separated(0.., item_parser, (ws, ",", ws))
         .parse_next(input)
         .map(|x: RangeMap<ACF>| {
             let end = input.location();
@@ -238,16 +262,10 @@ fn ws<'s>(input: &mut Located<&'s str>) -> PResult<&'s str, InputError<Located<&
     take_while(0.., WS).parse_next(input)
 }
 
-// pub fn parse_vec<'s>(
-//     data: &mut Located<&'s str>,
-// ) -> Result<Vec<(StringKey, Vec<(StringKey, Located<&'s str>)>)>, ParseError<Located<&'s str>, InputError<Located<&'s str>>>> {
-//     parser0.parse(data)
-// }
-
 pub fn tokenize_ast<'s>(
-    data: Located<&'s str>,
+    data: &'s str,
 ) -> Result<ACF, ParseError<Located<&'s str>, InputError<Located<&'s str>>>> {
-    parser0.parse(data)
+    base_parser.parse(Located::new(data))
 }
 
 #[cfg(test)]
@@ -285,31 +303,7 @@ fn debug_visit_ast<'a>(input: &'a str, acf: &ACF, out: &mut Vec<(char, &'a str)>
 fn tokenize_this() {
     let data =
         r#"config1={value: 1, default: 1_2, yes: true, number: 1.23},config2={DEFAULT: "testing"}"#;
-    // let mut data = r#"config1={value: 1, default: 12}"#;
-    let xd = Located::new(data);
-    let out = tokenize_ast(xd).unwrap();
-    // let expected: StringMap<_> = vec![
-    //     (
-    //         StringKey::from("config1"),
-    //         vec![
-    //             (StringKey::from("value"), "1"),
-    //             (StringKey::from("default"), "12"),
-    //             (StringKey::from("yes"), "true"),
-    //         ]
-    //         .into_iter()
-    //         .collect(),
-    //     ),
-    //     (
-    //         StringKey::from("config2"),
-    //         vec![(StringKey::from("DEFAULT"), "\"testing\"")]
-    //             .into_iter()
-    //             .collect(),
-    //     ),
-    // ]
-    // .into_iter()
-    // .collect();
-
-    // assert_eq!(out, expected);
+    let out = tokenize_ast(data).unwrap();
 
     let mut strings = Vec::new();
     debug_visit_ast(data, &out, &mut strings);
@@ -376,6 +370,39 @@ fn tokenize_this() {
         "\"testing\"",
     ),
 ];
+
+    assert_eq!(expected, strings);
+}
+
+#[test]
+fn tokenize_this2() {
+    let data = r#"config1=testing"#;
+    let out = tokenize_ast(data).unwrap();
+
+    let mut strings = Vec::new();
+    debug_visit_ast(data, &out, &mut strings);
+    let expected = vec![('m', "config1=testing"), ('k', "config1"), ('s', "testing")];
+
+    assert_eq!(expected, strings);
+}
+
+#[test]
+fn tokenize_this3() {
+    let data = r#"config1={1,2,3,4,5}"#;
+    let out = tokenize_ast(data).unwrap();
+
+    let mut strings = Vec::new();
+    debug_visit_ast(data, &out, &mut strings);
+    let expected = vec![
+        ('m', "config1={1,2,3,4,5}"),
+        ('k', "config1"),
+        ('l', "1,2,3,4,5"),
+        ('i', "1"),
+        ('i', "2"),
+        ('i', "3"),
+        ('i', "4"),
+        ('i', "5"),
+    ];
 
     assert_eq!(expected, strings);
 }
