@@ -120,6 +120,20 @@ where
     }
 }
 
+impl<K, V, H> IntoIterator for IndexMapWrapper<K, V, H>
+where
+    K: std::hash::Hash + std::cmp::Eq,
+    V: std::cmp::Eq,
+    H: std::hash::BuildHasher + Default,
+{
+    type Item = <IndexMap<K, V, H> as IntoIterator>::Item;
+    type IntoIter = <IndexMap<K, V, H> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 const SPECIAL_CHARS: [char; 5] = ['=', ',', '{', '}', ':'];
 
 impl<K, V, S> Accumulate<(K, V)> for IndexMapWrapper<K, V, S>
@@ -142,6 +156,14 @@ where
     }
 }
 
+pub fn parse_integer(x: &str) -> Result<i64, lexical::Error> {
+    lexical::parse_with_options::<i64, _, PARSE_FORMAT>(x, &PARSE_INTEGER_OPTION)
+}
+
+pub fn parse_float(x: &str) -> Result<f64, lexical::Error> {
+    lexical::parse_with_options::<f64, _, PARSE_FORMAT>(x, &PARSE_FLOAT_OPTION)
+}
+
 fn primative_parser<'s>(
     input: &mut Located<&'s str>,
 ) -> PResult<ACF, InputError<Located<&'s str>>> {
@@ -155,22 +177,8 @@ fn primative_parser<'s>(
 
             match matched {
                 "true" | "false" => ACF::Boolean(range),
-                x if lexical::parse_with_options::<i64, _, PARSE_FORMAT>(
-                    x,
-                    &PARSE_INTEGER_OPTION,
-                )
-                .is_ok() =>
-                {
-                    ACF::Integer(range)
-                }
-                x if lexical::parse_with_options::<f64, _, PARSE_FORMAT>(
-                    x,
-                    &PARSE_FLOAT_OPTION,
-                )
-                .is_ok() =>
-                {
-                    ACF::Float(range)
-                }
+                x if parse_integer(x).is_ok() => ACF::Integer(range),
+                x if parse_float(x).is_ok() => ACF::Float(range),
                 _ => ACF::String(range),
             }
         })
