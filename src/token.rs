@@ -1,10 +1,10 @@
 use std::hash::BuildHasher;
 
 // use winnow::ascii::alphanumeric1;
-use winnow::combinator::alt;
 use winnow::prelude::*;
 use winnow::stream::Located;
 use winnow::token::take_while;
+use winnow::{ascii::multispace0, combinator::alt};
 use winnow::{
     combinator::{delimited, separated, separated_pair},
     stream::Accumulate,
@@ -185,7 +185,7 @@ fn primative_parser<'s>(
 }
 
 fn range_parser<'s>(input: &mut Located<&'s str>) -> PResult<Range, InputError<Located<&'s str>>> {
-    primative_parser(input).map(|x| x.into_range())
+    delimited(ws, primative_parser.map(|x| x.into_range()), ws).parse_next(input)
 }
 
 // fn key_parser<'s>(
@@ -200,11 +200,16 @@ fn range_parser<'s>(input: &mut Located<&'s str>) -> PResult<Range, InputError<L
 fn map_item_parser<'s>(
     input: &mut Located<&'s str>,
 ) -> PResult<(Range, ACF), InputError<Located<&'s str>>> {
-    separated_pair(range_parser, (ws, ":", ws), primative_parser).parse_next(input)
+    delimited(
+        ws,
+        separated_pair(range_parser, (ws, ":", ws), primative_parser),
+        ws,
+    )
+    .parse_next(input)
 }
 
 fn seq_item_parser<'s>(input: &mut Located<&'s str>) -> PResult<ACF, InputError<Located<&'s str>>> {
-    primative_parser.parse_next(input)
+    delimited(ws, primative_parser, ws).parse_next(input)
 }
 
 fn list_item_parser<'s>(
@@ -212,10 +217,14 @@ fn list_item_parser<'s>(
 ) -> PResult<ACF, InputError<Located<&'s str>>> {
     let start = input.location();
 
-    alt((
-        separated(1.., map_item_parser, (ws, ",", ws)).map(|x: RangeMap<ACF>| either::Left(x)),
-        separated(1.., seq_item_parser, (ws, ",", ws)).map(|x: Vec<ACF>| either::Right(x)),
-    ))
+    delimited(
+        ws,
+        alt((
+            separated(1.., map_item_parser, (ws, ",", ws)).map(|x: RangeMap<ACF>| either::Left(x)),
+            separated(1.., seq_item_parser, (ws, ",", ws)).map(|x: Vec<ACF>| either::Right(x)),
+        )),
+        ws,
+    )
     .parse_next(input)
     .map(|options| {
         let end = input.location();
@@ -239,35 +248,43 @@ fn list_item_parser<'s>(
 fn composite_parser<'s>(
     input: &mut Located<&'s str>,
 ) -> PResult<ACF, InputError<Located<&'s str>>> {
-    delimited(("{", ws), list_item_parser, (ws, "}", ws)).parse_next(input)
+    delimited(
+        ws,
+        delimited((ws, "{", ws), list_item_parser, (ws, "}", ws)),
+        ws,
+    )
+    .parse_next(input)
 }
 
 fn value_parser<'s>(input: &mut Located<&'s str>) -> PResult<ACF, InputError<Located<&'s str>>> {
-    alt((composite_parser, primative_parser)).parse_next(input)
+    delimited(ws, alt((composite_parser, primative_parser)), ws).parse_next(input)
 }
 
 fn item_parser<'s>(
     input: &mut Located<&'s str>,
 ) -> PResult<(Range, ACF), InputError<Located<&'s str>>> {
-    separated_pair(range_parser, (ws, "=", ws), value_parser).parse_next(input)
+    delimited(
+        ws,
+        separated_pair(range_parser, (ws, "=", ws), value_parser),
+        ws,
+    )
+    .parse_next(input)
 }
 
 fn base_parser<'s>(input: &mut Located<&'s str>) -> PResult<ACF, InputError<Located<&'s str>>> {
     let start = input.location();
 
-    separated(0.., item_parser, (ws, ",", ws))
+    delimited(ws, separated(0.., item_parser, (ws, ",", ws)), ws)
         .parse_next(input)
-        .map(|x: RangeMap<ACF>| {
+        .map(|x| {
             let end = input.location();
             let range = start..end;
             ACF::Map(range, x)
         })
 }
 
-const WS: &[char] = &[' ', '\t', '\r', '\n'];
-
 fn ws<'s>(input: &mut Located<&'s str>) -> PResult<&'s str, InputError<Located<&'s str>>> {
-    take_while(0.., WS).parse_next(input)
+    multispace0.parse_next(input)
 }
 
 pub fn tokenize_ast<'s>(
