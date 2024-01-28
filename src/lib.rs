@@ -1,14 +1,3 @@
-use std::hash::BuildHasher;
-
-// use winnow::ascii::alphanumeric1;
-use winnow::error::{InputError, ParseError};
-use winnow::prelude::*;
-use winnow::token::take_while;
-use winnow::{
-    combinator::{delimited, separated, separated_pair},
-    stream::Accumulate,
-};
-
 use ahash::RandomState;
 use indexmap::IndexMap;
 use kstring::KString;
@@ -19,9 +8,12 @@ pub type Map<K, V> = IndexMap<K, V, RandomState>;
 pub type StringKey = String;
 pub type StringMap<V> = Map<StringKey, V>;
 
+pub mod selector;
 pub mod token;
 
 use token::{parse_float, parse_integer};
+
+pub use crate::selector::KeyIndexRef;
 
 #[macro_export]
 macro_rules! acf_map {
@@ -29,7 +21,7 @@ macro_rules! acf_map {
     ($($key:expr => $value:expr),*) => {
         {
             const CAP: usize = <[()]>::len(&[$({ stringify!($key); }),*]);
-            let mut map = StringMap::<ACF>::with_capacity_and_hasher(CAP, RandomState::new());
+            let mut map = crate::StringMap::<ACF>::with_capacity_and_hasher(CAP, ahash::RandomState::new());
             $(
                 map.insert($key.into(), ACF::from($value));
             )*
@@ -117,6 +109,35 @@ impl From<StringMap<ACF>> for ACF {
     }
 }
 
+impl ACF {
+    pub fn get(&self, key: &str) -> Option<&Self> {
+        match self {
+            ACF::Map(map) => map.get(key),
+            _ => None,
+        }
+    }
+
+    pub fn get_index(&self, index: isize) -> Option<&Self> {
+        match self {
+            ACF::Seq(vector) if index >= 0 => vector.get(index as usize),
+            ACF::Seq(vector)
+                if index < 0
+                    && vector
+                        .len()
+                        .checked_sub(index.checked_abs()? as usize)
+                        .is_some() =>
+            {
+                vector.get(vector.len() - (-index) as usize)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn selector(&self, selector: &[KeyIndexRef<'_>]) -> Option<&Self> {
+        selector::selector(self, selector)
+    }
+}
+
 pub fn tokenized_to_config(input: &str, tokens: token::ACF) -> ACF {
     match tokens {
         token::ACF::Boolean(range) => ACF::Boolean(to_boolean(&input[range])),
@@ -182,4 +203,16 @@ fn parse_config() {
     };
 
     assert_eq!(out, expected);
+}
+
+#[test]
+fn acf_key_index_bounds() {
+    let data = acf_seq! {1, 2};
+
+    assert!(data.get_index(isize::MAX).is_none());
+    assert!(data.get_index(isize::MIN).is_none());
+    assert!(data.get_index(0).is_some());
+    assert!(data.get_index(1).is_some());
+    assert!(data.get_index(-1).is_some());
+    assert!(data.get_index(-2).is_some());
 }
