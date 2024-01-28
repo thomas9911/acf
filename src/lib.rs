@@ -2,6 +2,7 @@ use ahash::RandomState;
 use indexmap::IndexMap;
 use kstring::KString;
 use ordered_float::OrderedFloat;
+use smallvec::SmallVec;
 use snailquote::unescape;
 
 pub type Map<K, V> = IndexMap<K, V, RandomState>;
@@ -136,6 +137,23 @@ impl ACF {
     pub fn selector(&self, selector: &[KeyIndexRef<'_>]) -> Option<&Self> {
         selector::selector(self, selector)
     }
+
+    pub fn json_pointer(&self, pointer: &str) -> Option<&Self> {
+        let mut config_pointer = self;
+
+        for key in selector::parse_json_pointer::<SmallVec<[_; 8]>>(pointer)? {
+            match key {
+                KeyIndexRef::String(key) => {
+                    config_pointer = config_pointer.get(&key)?;
+                }
+                KeyIndexRef::Integer(key) => {
+                    config_pointer = config_pointer.get_index(key)?;
+                }
+            }
+        }
+
+        Some(config_pointer)
+    }
 }
 
 pub fn tokenized_to_config(input: &str, tokens: token::ACF) -> ACF {
@@ -215,4 +233,38 @@ fn acf_key_index_bounds() {
     assert!(data.get_index(1).is_some());
     assert!(data.get_index(-1).is_some());
     assert!(data.get_index(-2).is_some());
+}
+
+#[test]
+fn acf_json_pointer() {
+    let config = acf_map! {
+        "config1" => acf_map! {
+            "value" => 1,
+            "default" => 12,
+            "yes" => true,
+        },
+        "config2" => acf_map! {
+            "DEFAULT" => "testing",
+            "extra" => "extra 'quotes'",
+        },
+        "config3" => acf_seq!{false, 123, 1.23}
+    };
+
+    assert_eq!(
+        &ACF::from(true),
+        config.json_pointer("/config1/yes").unwrap()
+    );
+    assert_eq!(
+        &ACF::from(12),
+        config.json_pointer("/config1/default").unwrap()
+    );
+    assert_eq!(
+        &ACF::from("testing"),
+        config.json_pointer("/config2/DEFAULT").unwrap()
+    );
+    assert_eq!(
+        &ACF::from(false),
+        config.json_pointer("/config3/0").unwrap()
+    );
+    assert_eq!(&ACF::from(1.23), config.json_pointer("/config3/2").unwrap());
 }

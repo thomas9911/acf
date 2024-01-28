@@ -52,7 +52,7 @@ pub enum KeyIndexRef<'a> {
 
 impl<'a> From<&'a str> for KeyIndexRef<'a> {
     fn from(value: &'a str) -> Self {
-        KeyIndexRef::String(value.into())
+        KeyIndexRef::String(KStringCow::from_ref(value))
     }
 }
 
@@ -62,7 +62,10 @@ impl<'a> From<isize> for KeyIndexRef<'a> {
     }
 }
 
-pub fn selector<'a, 'b, I: IntoIterator<Item=&'b KeyIndexRef<'b>>>(config: &'a ACF, selector: I) -> Option<&'a ACF> {
+pub fn selector<'a, 'b, I: IntoIterator<Item = &'b KeyIndexRef<'b>>>(
+    config: &'a ACF,
+    selector: I,
+) -> Option<&'a ACF> {
     let mut config_pointer = config;
 
     for key in selector {
