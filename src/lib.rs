@@ -200,7 +200,7 @@ fn to_boolean(input: &str) -> bool {
 fn parse_config() {
     let mut data = r#"
     config1={value: 1, default: 12, yes: true},
-    config2={DEFAULT: "testing", extra: "extra \'quotes\'"},
+    config2={DEFAULT: "testing", extra: "extra \"quotes\""},
     config3={false, 123, 1.23}
     "#;
     let tokens = token::tokenize_ast(&mut data).unwrap();
@@ -215,7 +215,7 @@ fn parse_config() {
         },
         "config2" => acf_map! {
             "DEFAULT" => "testing",
-            "extra" => "extra 'quotes'",
+            "extra" => "extra \"quotes\"",
         },
         "config3" => acf_seq!{false, 123, 1.23}
     };

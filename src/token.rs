@@ -2,11 +2,16 @@ use std::hash::BuildHasher;
 
 // use winnow::ascii::alphanumeric1;
 use winnow::prelude::*;
-use winnow::stream::Located;
+use winnow::token::any;
 use winnow::token::take_while;
 use winnow::{ascii::multispace0, combinator::alt};
 use winnow::{
-    combinator::{delimited, separated, separated_pair},
+    combinator::{cut_err, fold_repeat, preceded, terminated},
+    stream::Located,
+    token::none_of,
+};
+use winnow::{
+    combinator::{delimited, repeat_till, separated, separated_pair},
     stream::Accumulate,
 };
 use winnow::{
@@ -164,12 +169,53 @@ pub fn parse_float(x: &str) -> Result<f64, lexical::Error> {
     lexical::parse_with_options::<f64, _, PARSE_FORMAT>(x, &PARSE_FLOAT_OPTION)
 }
 
+// copied mostly from json winnow example: START
+
+fn string<'s>(input: &mut Located<&'s str>) -> PResult<&'s str, InputError<Located<&'s str>>> {
+    preceded(
+        '"',
+        // `cut_err` transforms an `ErrMode::Backtrack(e)` to `ErrMode::Cut(e)`, signaling to
+        // combinators like  `alt` that they should not try other parsers. We were in the
+        // right branch (since we found the `"` character) but encountered an error when
+        // parsing the string
+        cut_err(repeat_till::<_, _, (), _, _, _, _>(0.., character, '"').recognize()),
+    )
+    .parse_next(input)
+}
+
+fn character<'s>(input: &mut Located<&'s str>) -> PResult<char, InputError<Located<&'s str>>> {
+    let c = none_of('\"').parse_next(input)?;
+    if c == '\\' {
+        any.verify(|c| match c {
+            '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' => true,
+            _ => false,
+        })
+        .parse_next(input)
+    } else {
+        Ok(c)
+    }
+}
+
+// copied mostly from json winnow example: END
+
+fn take_single_primative_parser<'s>(
+    input: &mut Located<&'s str>,
+) -> PResult<&'s str, InputError<Located<&'s str>>> {
+    alt((
+        string,
+        take_while(1.., |ch: char| {
+            !(ch.is_whitespace() || SPECIAL_CHARS.contains(&ch))
+        }),
+    ))
+    .parse_next(input)
+}
+
 fn primative_parser<'s>(
     input: &mut Located<&'s str>,
 ) -> PResult<ACF, InputError<Located<&'s str>>> {
     // alphanumeric1.parse_next(input)
     let start = input.location();
-    take_while(0.., |ch| !SPECIAL_CHARS.contains(&ch))
+    take_single_primative_parser
         .parse_next(input)
         .map(|matched| {
             let end = input.location();
@@ -427,6 +473,82 @@ fn tokenize_this3() {
         ('i', "3"),
         ('i', "4"),
         ('i', "5"),
+    ];
+
+    assert_eq!(expected, strings);
+}
+
+#[test]
+fn escaped_text_quote() {
+    let data = r#"config1={a: "extra \"quote\""}"#;
+
+    let out = tokenize_ast(data).unwrap();
+
+    let mut strings = Vec::new();
+    debug_visit_ast(data, &out, &mut strings);
+    let expected = vec![
+        ('m', r#"config1={a: "extra \"quote\""}"#),
+        ('k', "config1"),
+        ('m', r#"a: "extra \"quote\"""#),
+        ('k', "a"),
+        ('s', r#""extra \"quote\"""#),
+    ];
+
+    assert_eq!(expected, strings);
+}
+
+#[test]
+fn escaped_text_comma() {
+    let data = r#"config1={a: "extra, comma"}"#;
+
+    let out = tokenize_ast(data).unwrap();
+
+    let mut strings = Vec::new();
+    debug_visit_ast(data, &out, &mut strings);
+    let expected = vec![
+        ('m', "config1={a: \"extra, comma\"}"),
+        ('k', "config1"),
+        ('m', "a: \"extra, comma\""),
+        ('k', "a"),
+        ('s', "\"extra, comma\""),
+    ];
+
+    assert_eq!(expected, strings);
+}
+
+#[test]
+fn escaped_text_colon() {
+    let data = r#"config1={a: "extra: colon"}"#;
+
+    let out = tokenize_ast(data).unwrap();
+
+    let mut strings = Vec::new();
+    debug_visit_ast(data, &out, &mut strings);
+    let expected = vec![
+        ('m', "config1={a: \"extra: colon\"}"),
+        ('k', "config1"),
+        ('m', "a: \"extra: colon\""),
+        ('k', "a"),
+        ('s', "\"extra: colon\""),
+    ];
+
+    assert_eq!(expected, strings);
+}
+
+#[test]
+fn escaped_text_bracket() {
+    let data = r#"config1={a: "{bracket}"}"#;
+
+    let out = tokenize_ast(data).unwrap();
+
+    let mut strings = Vec::new();
+    debug_visit_ast(data, &out, &mut strings);
+    let expected = vec![
+        ('m', "config1={a: \"{bracket}\"}"),
+        ('k', "config1"),
+        ('m', "a: \"{bracket}\""),
+        ('k', "a"),
+        ('s', "\"{bracket}\""),
     ];
 
     assert_eq!(expected, strings);
