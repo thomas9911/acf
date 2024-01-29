@@ -1,23 +1,13 @@
 use std::hash::BuildHasher;
 
-// use winnow::ascii::alphanumeric1;
+use winnow::ascii::multispace0;
+use winnow::combinator::{
+    alt, cut_err, delimited, preceded, repeat_till, separated, separated_pair,
+};
+use winnow::error::{InputError, ParseError};
 use winnow::prelude::*;
-use winnow::token::any;
-use winnow::token::take_while;
-use winnow::{ascii::multispace0, combinator::alt};
-use winnow::{
-    combinator::{cut_err, fold_repeat, preceded, terminated},
-    stream::Located,
-    token::none_of,
-};
-use winnow::{
-    combinator::{delimited, repeat_till, separated, separated_pair},
-    stream::Accumulate,
-};
-use winnow::{
-    error::{InputError, ParseError},
-    stream::Location,
-};
+use winnow::stream::{Accumulate, Located, Location};
+use winnow::token::{any, none_of, take_while};
 
 use ahash::RandomState;
 use indexmap::IndexMap;
@@ -25,6 +15,7 @@ use indexmap::IndexMap;
 pub type Map<K, V> = IndexMapWrapper<K, V, RandomState>;
 pub type Range = std::ops::Range<usize>;
 pub type RangeMap<V> = Map<Range, V>;
+pub type Seq<T> = Vec<T>;
 
 const PARSE_FORMAT: u128 = lexical::format::TOML;
 const PARSE_FLOAT_OPTION: lexical::ParseFloatOptions = lexical::ParseFloatOptions::new();
@@ -36,7 +27,7 @@ pub enum ACF {
     Integer(Range),
     Float(Range),
     Boolean(Range),
-    Seq(Range, Vec<ACF>),
+    Seq(Range, Seq<ACF>),
     Map(Range, RangeMap<ACF>),
 }
 
@@ -65,17 +56,15 @@ impl ACF {
 }
 
 #[derive(Debug)]
-pub struct IndexMapWrapper<
-    K: std::hash::Hash + std::cmp::Eq,
-    V: std::cmp::Eq,
-    H: std::hash::BuildHasher,
->(IndexMap<K, V, H>);
+pub struct IndexMapWrapper<K: std::hash::Hash + std::cmp::Eq, V: std::cmp::Eq, H: BuildHasher>(
+    IndexMap<K, V, H>,
+);
 
 impl<K, V, H> PartialEq for IndexMapWrapper<K, V, H>
 where
     K: std::hash::Hash + std::cmp::Eq,
     V: std::cmp::Eq,
-    H: std::hash::BuildHasher,
+    H: BuildHasher,
 {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
@@ -86,7 +75,7 @@ impl<K, V, H> Eq for IndexMapWrapper<K, V, H>
 where
     K: std::hash::Hash + std::cmp::Eq,
     V: std::cmp::Eq,
-    H: std::hash::BuildHasher,
+    H: BuildHasher,
 {
 }
 
@@ -94,7 +83,7 @@ impl<K, V, H> std::ops::Deref for IndexMapWrapper<K, V, H>
 where
     K: std::hash::Hash + std::cmp::Eq,
     V: std::cmp::Eq,
-    H: std::hash::BuildHasher,
+    H: BuildHasher,
 {
     type Target = IndexMap<K, V, H>;
 
@@ -107,7 +96,7 @@ impl<K, V, H> std::ops::DerefMut for IndexMapWrapper<K, V, H>
 where
     K: std::hash::Hash + std::cmp::Eq,
     V: std::cmp::Eq,
-    H: std::hash::BuildHasher,
+    H: BuildHasher,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
@@ -118,7 +107,7 @@ impl<K, V, H> FromIterator<(K, V)> for IndexMapWrapper<K, V, H>
 where
     K: std::hash::Hash + std::cmp::Eq,
     V: std::cmp::Eq,
-    H: std::hash::BuildHasher + Default,
+    H: BuildHasher + Default,
 {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iterable: I) -> Self {
         IndexMapWrapper(IndexMap::from_iter(iterable))
@@ -129,7 +118,7 @@ impl<K, V, H> IntoIterator for IndexMapWrapper<K, V, H>
 where
     K: std::hash::Hash + std::cmp::Eq,
     V: std::cmp::Eq,
-    H: std::hash::BuildHasher + Default,
+    H: BuildHasher + Default,
 {
     type Item = <IndexMap<K, V, H> as IntoIterator>::Item;
     type IntoIter = <IndexMap<K, V, H> as IntoIterator>::IntoIter;

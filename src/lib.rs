@@ -9,10 +9,10 @@ pub type Map<K, V> = IndexMap<K, V, RandomState>;
 pub type StringKey = String;
 pub type StringMap<V> = Map<StringKey, V>;
 
+pub mod parser;
 pub mod selector;
-pub mod token;
 
-use token::{parse_float, parse_integer};
+use parser::{parse_float, parse_integer};
 
 pub use crate::selector::KeyIndexRef;
 
@@ -156,25 +156,25 @@ impl ACF {
     }
 }
 
-pub fn tokenized_to_config(input: &str, tokens: token::ACF) -> ACF {
+pub fn tokenized_to_config(input: &str, tokens: parser::ACF) -> ACF {
     match tokens {
-        token::ACF::Boolean(range) => ACF::Boolean(to_boolean(&input[range])),
-        token::ACF::Integer(range) => {
+        parser::ACF::Boolean(range) => ACF::Boolean(to_boolean(&input[range])),
+        parser::ACF::Integer(range) => {
             ACF::Integer(parse_integer(&input[range]).expect("tokenizer checked this"))
         }
-        token::ACF::Float(range) => ACF::Float(OrderedFloat::from(
+        parser::ACF::Float(range) => ACF::Float(OrderedFloat::from(
             parse_float(&input[range]).expect("tokenizer checked this"),
         )),
-        token::ACF::String(range) => {
+        parser::ACF::String(range) => {
             ACF::String(unescape(&input[range]).unwrap_or(String::new()).into())
         }
-        token::ACF::Seq(_, values) => ACF::Seq(
+        parser::ACF::Seq(_, values) => ACF::Seq(
             values
                 .into_iter()
                 .map(|value| tokenized_to_config(input, value))
                 .collect(),
         ),
-        token::ACF::Map(_, map_values) => ACF::Map(
+        parser::ACF::Map(_, map_values) => ACF::Map(
             map_values
                 .into_iter()
                 .map(|(key, value)| {
@@ -203,7 +203,7 @@ fn parse_config() {
     config2={DEFAULT: "testing", extra: "extra \"quotes\""},
     config3={false, 123, 1.23}
     "#;
-    let tokens = token::tokenize_ast(&mut data).unwrap();
+    let tokens = parser::tokenize_ast(&mut data).unwrap();
 
     let out = tokenized_to_config(data, tokens);
 
