@@ -11,6 +11,7 @@ pub type StringMap<V> = Map<StringKey, V>;
 
 pub mod parser;
 pub mod selector;
+pub mod tokenizer;
 
 use parser::{parse_float, parse_integer};
 

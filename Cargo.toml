@@ -11,8 +11,9 @@ either = "1.9.0"
 indexmap = "2.1.0"
 kstring = "2.0.0"
 lexical = { version = "6.1.1", features = ["format"] }
+logos = "0.16.0"
 ordered-float = "4.2.0"
 serde_json = "1.0.111"
 smallvec = "1.13.1"
-snailquote = "0.3.1"
+snailquote = {git = "https://github.com/euank/snailquote", rev = "e3e0ce09f275011d8734b87906472aa1a46df6c2"}
 winnow = { version = "0.5.35" }
