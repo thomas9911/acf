@@ -359,7 +359,7 @@ fn parse_map_or_seq<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, ParseError
     }
 
     while let Some(token) = lexer.peek() {
-        dbg!(&token);
+        // dbg!(&token);
         if token.as_ref().map(|x| x.kind()) == Ok(TokenKind::BracketClose) {
             lexer.next();
             break;
@@ -419,7 +419,7 @@ fn parse_map_item<'a>(
     };
     parse_expect(lexer, separator)?;
     let value = parse_value(lexer)?;
-    dbg!(&value);
+    // dbg!(&value);
 
     Ok((key.to_string(), value))
 }

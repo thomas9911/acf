@@ -17,3 +17,10 @@ serde_json = "1.0.111"
 smallvec = "1.13.1"
 snailquote = {git = "https://github.com/euank/snailquote", rev = "e3e0ce09f275011d8734b87906472aa1a46df6c2"}
 winnow = { version = "0.5.35" }
+
+[dev-dependencies]
+bencher = "0.1.5"
+
+[[bench]]
+name = "example"
+harness = false
