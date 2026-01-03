@@ -32,9 +32,11 @@ impl Display for TokenizeErrorKind {
 
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct TokenizeError {
-    span: Span,
-    error: TokenizeErrorKind,
+    pub span: Span,
+    pub error: TokenizeErrorKind,
 }
+
+impl std::error::Error for TokenizeError {}
 
 impl Display for TokenizeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -74,6 +76,64 @@ impl TokenizeError {
             span,
             error: TokenizeErrorKind::Unescape(err),
         }
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq)]
+pub enum ParseErrorKind {
+    UnexpectedToken {
+        expected: TokenKind,
+        got: TokenKind,
+    },
+    UnexpectedEnd {
+        expected: TokenKind,
+    },
+    UnexpectedItemMap,
+    UnexpectedItemSeq,
+    LexerError(TokenizeError),
+    #[default]
+    Other,
+}
+
+impl Display for ParseErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseErrorKind::LexerError(e) => e.fmt(f),
+            ParseErrorKind::UnexpectedEnd { expected } => {
+                write!(f, "unexpected end, expected {:?}", expected)
+            }
+            ParseErrorKind::UnexpectedToken { expected, got } => write!(
+                f,
+                "unexpected token, expected {:?} but found {:?}",
+                expected, got
+            ),
+            ParseErrorKind::UnexpectedItemMap => {
+                f.write_str("unable to mix map and sequence, expected sequence but got map")
+            }
+            ParseErrorKind::UnexpectedItemSeq => {
+                f.write_str("unable to mix map and sequence, expected map but got sequence")
+            }
+            ParseErrorKind::Other => f.write_str("other"),
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct ParseError {
+    pub error: ParseErrorKind,
+}
+
+impl std::error::Error for ParseError {}
+
+impl ParseError {
+    fn from_kind(error: ParseErrorKind) -> Self {
+        ParseError { error }
+    }
+}
+
+impl Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "parse error: {}", self.error)
     }
 }
 
@@ -203,30 +263,30 @@ pub fn tokenize<'a>(input: &'a str) -> Lexer<'a> {
 fn parse_expect<'a>(
     lexer: &mut PeekableLexer<'a>,
     expected: TokenKind,
-) -> Result<Token<'a>, String> {
+) -> Result<Token<'a>, ParseError> {
     match lexer.next() {
-        None => Err(format!("unexpected end, expected {:?}", expected)),
-        Some(Ok(token)) if !expected.matches(&token) => Err(format!(
-            "unexpected token, expected {:?} but found {:?}",
+        None => Err(ParseError::from_kind(ParseErrorKind::UnexpectedEnd {
             expected,
-            token.kind()
-        )),
-        Some(Err(e)) => Err(e.to_string()),
+        })),
+        Some(Ok(token)) if !expected.matches(&token) => {
+            Err(ParseError::from_kind(ParseErrorKind::UnexpectedToken {
+                expected,
+                got: token.kind(),
+            }))
+        }
+        Some(Err(e)) => Err(ParseError::from_kind(ParseErrorKind::LexerError(e))),
         Some(Ok(token)) => Ok(token),
     }
 }
 
-pub fn parse<'a>(lexer: Lexer<'a>) -> Result<ACF, String> {
+pub fn parse<'a>(lexer: Lexer<'a>) -> Result<ACF, ParseError> {
     let mut lexer = lexer.peekable();
     parse_root(&mut lexer)
 }
 
-fn parse_root<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
+fn parse_root<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, ParseError> {
     let mut entity = StringMap::default();
     while let Some(_) = lexer.peek() {
-        // let key = parse_expect(lexer, TokenKind::String)?;
-        // parse_expect(lexer, TokenKind::Equal)?;
-        // let value = parse_value(lexer)?;
         let (key, value) = parse_map_item(lexer, TokenKind::Equal)?;
 
         entity.insert(key, value);
@@ -239,11 +299,15 @@ fn parse_root<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
     Ok(ACF::Map(entity))
 }
 
-fn parse_value<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
+fn parse_value<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, ParseError> {
     let current_token = lexer
         .next()
-        .ok_or_else(|| String::from("unexpected end, expected value"))?
-        .map_err(|e| e.to_string())?;
+        .ok_or_else(|| {
+            ParseError::from_kind(ParseErrorKind::UnexpectedEnd {
+                expected: TokenKind::Value,
+            })
+        })?
+        .map_err(|e| ParseError::from_kind(ParseErrorKind::LexerError(e)))?;
 
     let value = match current_token {
         Token::Bool(bool) => ACF::Boolean(bool),
@@ -255,18 +319,17 @@ fn parse_value<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
         },
         Token::BracketOpen => parse_map_or_seq(lexer)?,
         _ => {
-            return Err(format!(
-                "unexpected token, expected {:?} but found {:?}",
-                TokenKind::Value,
-                current_token.kind()
-            ))
+            return Err(ParseError::from_kind(ParseErrorKind::UnexpectedToken {
+                expected: TokenKind::Value,
+                got: current_token.kind(),
+            }));
         }
     };
 
     Ok(value)
 }
 
-fn parse_map_or_seq<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
+fn parse_map_or_seq<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, ParseError> {
     // is already missing the first {
 
     // you cannot mix map and seq in one entity
@@ -301,15 +364,20 @@ fn parse_map_or_seq<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
             lexer.next();
             break;
         }
-        if is_map {
-            let (key, value) = parse_map_item(lexer, TokenKind::Colon)?;
-            let map_ref = entity.as_map_mut().expect("we just set this to map");
-            map_ref.insert(key, value);
-        } else {
-            let value = parse_value(lexer)?;
-            let seq_ref = entity.as_seq_mut().expect("we just set this to seq");
-            seq_ref.push(value);
-        }
+        match parse_map_or_seq_item(lexer, TokenKind::Colon)? {
+            Item::Map(key, value) if is_map => {
+                let map_ref = entity.as_map_mut().expect("we just set this to map");
+                map_ref.insert(key, value);
+            }
+            Item::Seq(value) if !is_map => {
+                let seq_ref = entity.as_seq_mut().expect("we just set this to seq");
+                seq_ref.push(value);
+            }
+            Item::Map(_, _) => {
+                return Err(ParseError::from_kind(ParseErrorKind::UnexpectedItemMap))
+            }
+            Item::Seq(_) => return Err(ParseError::from_kind(ParseErrorKind::UnexpectedItemSeq)),
+        };
 
         if parse_end_of_sequence(lexer, Some(TokenKind::BracketClose))? {
             break;
@@ -324,7 +392,7 @@ fn parse_map_or_seq<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
 fn parse_end_of_sequence<'a>(
     lexer: &mut PeekableLexer<'a>,
     end_token: Option<TokenKind>,
-) -> Result<bool, String> {
+) -> Result<bool, ParseError> {
     // comma
     let peeked = lexer.peek();
     let peeked_kind = peeked.as_ref().map(|x| x.as_ref().map(|y| y.kind()));
@@ -344,7 +412,7 @@ fn parse_end_of_sequence<'a>(
 fn parse_map_item<'a>(
     lexer: &mut PeekableLexer<'a>,
     separator: TokenKind,
-) -> Result<(String, ACF), String> {
+) -> Result<(String, ACF), ParseError> {
     let key = parse_expect(lexer, TokenKind::String)?;
     let Token::String(key) = key else {
         unreachable!("parse_expect bug, expected string")
@@ -364,13 +432,16 @@ enum Item {
 fn parse_map_or_seq_item<'a>(
     lexer: &mut PeekableLexer<'a>,
     separator: TokenKind,
-) -> Result<Item, String> {
+) -> Result<Item, ParseError> {
     let value = parse_value(lexer)?;
     match lexer.peek() {
         Some(Ok(s)) if s.kind() == separator => {
-            let key = value
-                .into_string()
-                .ok_or_else(|| format!("unexpected token, expected String"))?;
+            let key = value.into_string().ok_or_else(|| {
+                ParseError::from_kind(ParseErrorKind::UnexpectedToken {
+                    expected: TokenKind::String,
+                    got: TokenKind::Value,
+                })
+            })?;
             lexer.next();
             let value = parse_value(lexer)?;
 
@@ -494,4 +565,36 @@ fn parse_test_seq_with_numbers() {
     let lexer = tokenize(data);
 
     assert_eq!(expected, parse(lexer).unwrap());
+}
+
+#[test]
+fn parse_test_error_unexpected_end() {
+    let data = r#"config={a: 1, b: 1.015, c: "#;
+    let lexer = tokenize(data);
+
+    let error = parse(lexer).unwrap_err();
+    let expected = ParseError::from_kind(ParseErrorKind::UnexpectedEnd {
+        expected: TokenKind::Value,
+    });
+    assert_eq!(expected, error);
+}
+
+#[test]
+fn parse_test_error_mix_map_and_seq() {
+    let data = r#"config={a: 1, b: 1.015, c}"#;
+    let lexer = tokenize(data);
+
+    let error = parse(lexer).unwrap_err();
+    let expected = ParseError::from_kind(ParseErrorKind::UnexpectedItemSeq);
+    assert_eq!(expected, error);
+}
+
+#[test]
+fn parse_test_error_mix_map_and_seq_2() {
+    let data = r#"config={a, b: 2}"#;
+    let lexer = tokenize(data);
+
+    let error = parse(lexer).unwrap_err();
+    let expected = ParseError::from_kind(ParseErrorKind::UnexpectedItemMap);
+    assert_eq!(expected, error);
 }
