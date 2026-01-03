@@ -368,6 +368,12 @@ fn tokenize_this3() {
 }
 
 #[test]
+fn empty_list_or_map() {
+    let data = r#"config1={}"#;
+    tokenize_ast(data).unwrap_err();
+}
+
+#[test]
 fn escaped_text_quote() {
     let data = r#"config1={a: "extra \"quote\""}"#;
 

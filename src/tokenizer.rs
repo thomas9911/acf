@@ -1,10 +1,14 @@
-use logos::{Lexer, Logos, Source, Span};
-use std::num::ParseIntError;
+use kstring::KString;
+use logos::{Logos, Span};
 use std::{borrow::Cow, fmt::Display, num::ParseFloatError};
+use std::{iter::Peekable, num::ParseIntError};
 
-use crate::ACF;
+use crate::{StringMap, ACF};
 
-const SPECIAL_CHARS: [char; 5] = ['=', ',', '{', '}', ':'];
+// const SPECIAL_CHARS: [char; 5] = ['=', ',', '{', '}', ':'];
+
+pub type Lexer<'a> = logos::Lexer<'a, Token<'a>>;
+pub type PeekableLexer<'a> = Peekable<Lexer<'a>>;
 
 #[derive(Default, Debug, Clone, PartialEq)]
 pub enum TokenizeErrorKind {
@@ -17,7 +21,12 @@ pub enum TokenizeErrorKind {
 
 impl Display for TokenizeErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        match self {
+            TokenizeErrorKind::ParseInt(parse_int_error) => parse_int_error.fmt(f),
+            TokenizeErrorKind::ParseFloat(parse_float_error) => parse_float_error.fmt(f),
+            TokenizeErrorKind::Unescape(unescape_error) => unescape_error.fmt(f),
+            TokenizeErrorKind::Other => f.write_str("other"),
+        }
     }
 }
 
@@ -29,17 +38,17 @@ pub struct TokenizeError {
 
 impl Display for TokenizeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        // TODO: include the slice here as well?
+        write!(
+            f,
+            "tokenize error: {} on {}..{}",
+            self.error, self.span.start, self.span.end
+        )
     }
 }
 
-// impl From<ParseIntError> for TokenizeError  {
-//     fn from(value: ParseIntError) -> Self {
-//         TokenizeError::ParseInt(value)
-//     }
-// }
 impl TokenizeError {
-    fn from_lexer<'a>(lexer: &mut logos::Lexer<'a, Token<'a>>) -> Self {
+    fn from_lexer<'a>(lexer: &mut Lexer<'a>) -> Self {
         TokenizeError {
             span: lexer.span(),
             error: TokenizeErrorKind::default(),
@@ -68,7 +77,7 @@ impl TokenizeError {
     }
 }
 
-fn to_boolean<'a>(lexer: &mut Lexer<'a, Token<'a>>) -> bool {
+fn to_boolean<'a>(lexer: &mut Lexer<'a>) -> bool {
     match lexer.slice() {
         "true" => true,
         "false" => false,
@@ -76,7 +85,7 @@ fn to_boolean<'a>(lexer: &mut Lexer<'a, Token<'a>>) -> bool {
     }
 }
 
-fn to_integer<'a>(lexer: &mut Lexer<'a, Token<'a>>) -> Result<i64, TokenizeError> {
+fn to_integer<'a>(lexer: &mut Lexer<'a>) -> Result<i64, TokenizeError> {
     lexer
         .slice()
         .replace("_", "")
@@ -84,14 +93,14 @@ fn to_integer<'a>(lexer: &mut Lexer<'a, Token<'a>>) -> Result<i64, TokenizeError
         .map_err(|e| TokenizeError::from_parse_int_error(e, lexer.span()))
 }
 
-fn to_float<'a>(lexer: &mut Lexer<'a, Token<'a>>) -> Result<f64, TokenizeError> {
+fn to_float<'a>(lexer: &mut Lexer<'a>) -> Result<f64, TokenizeError> {
     lexer
         .slice()
         .parse()
         .map_err(|e| TokenizeError::from_parse_float_error(e, lexer.span()))
 }
 
-fn to_unquote_string<'a>(lexer: &mut Lexer<'a, Token<'a>>) -> Result<Cow<'a, str>, TokenizeError> {
+fn to_unquote_string<'a>(lexer: &mut Lexer<'a>) -> Result<Cow<'a, str>, TokenizeError> {
     if lexer.slice().len() >= 2 {
         let unescaped = snailquote::unescape(lexer.slice())
             .map_err(|e| TokenizeError::from_unescaped_error(e, lexer.span()))?;
@@ -101,7 +110,7 @@ fn to_unquote_string<'a>(lexer: &mut Lexer<'a, Token<'a>>) -> Result<Cow<'a, str
     }
 }
 
-fn slice_to_cow<'a>(lexer: &mut Lexer<'a, Token<'a>>) -> Cow<'a, str> {
+fn slice_to_cow<'a>(lexer: &mut Lexer<'a>) -> Cow<'a, str> {
     lexer.slice().into()
 }
 
@@ -187,20 +196,17 @@ impl TokenKind {
     }
 }
 
-// pub fn tokenize<'a>(input: &'a str) -> impl Iterator<Item = Result<Token<'a>, TokenizeError>> + 'a {
-//     Token::lexer(input)
-// }
-pub fn tokenize<'a>(input: &'a str) -> Lexer<'a, Token<'a>> {
+pub fn tokenize<'a>(input: &'a str) -> Lexer<'a> {
     Token::lexer(input)
 }
 
 fn parse_expect<'a>(
-    lexer: &mut Lexer<'a, Token<'a>>,
+    lexer: &mut PeekableLexer<'a>,
     expected: TokenKind,
 ) -> Result<Token<'a>, String> {
     match lexer.next() {
         None => Err(format!("unexpected end, expected {:?}", expected)),
-        Some(Ok(token)) if expected.matches(&token) => Err(format!(
+        Some(Ok(token)) if !expected.matches(&token) => Err(format!(
             "unexpected token, expected {:?} but found {:?}",
             expected,
             token.kind()
@@ -210,17 +216,168 @@ fn parse_expect<'a>(
     }
 }
 
-pub fn parse<'a>(mut lexer: Lexer<'a, Token<'a>>) -> Result<ACF, String> {
+pub fn parse<'a>(lexer: Lexer<'a>) -> Result<ACF, String> {
+    let mut lexer = lexer.peekable();
     parse_root(&mut lexer)
 }
 
-fn parse_root<'a>(lexer: &mut Lexer<'a, Token<'a>>) -> Result<ACF, String> {
-    let key = parse_expect(lexer, TokenKind::String)?;
-    parse_expect(lexer, TokenKind::Equal)?;
-    // TODO: doesnt work because of array and map
-    let value = parse_expect(lexer, TokenKind::Value)?;
+fn parse_root<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
+    let mut entity = StringMap::default();
+    while let Some(_) = lexer.peek() {
+        // let key = parse_expect(lexer, TokenKind::String)?;
+        // parse_expect(lexer, TokenKind::Equal)?;
+        // let value = parse_value(lexer)?;
+        let (key, value) = parse_map_item(lexer, TokenKind::Equal)?;
 
-    Ok(ACF::Boolean(true))
+        entity.insert(key, value);
+
+        if parse_end_of_sequence(lexer, None)? {
+            break;
+        }
+    }
+
+    Ok(ACF::Map(entity))
+}
+
+fn parse_value<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
+    let current_token = lexer
+        .next()
+        .ok_or_else(|| String::from("unexpected end, expected value"))?
+        .map_err(|e| e.to_string())?;
+
+    let value = match current_token {
+        Token::Bool(bool) => ACF::Boolean(bool),
+        Token::Float(float) => ACF::Float(float.into()),
+        Token::Integer(integer) => ACF::Integer(integer),
+        Token::String(string) => match string {
+            Cow::Borrowed(str) => ACF::String(KString::from_ref(&str)),
+            Cow::Owned(string) => ACF::String(KString::from_string(string)),
+        },
+        Token::BracketOpen => parse_map_or_seq(lexer)?,
+        _ => {
+            return Err(format!(
+                "unexpected token, expected {:?} but found {:?}",
+                TokenKind::Value,
+                current_token.kind()
+            ))
+        }
+    };
+
+    Ok(value)
+}
+
+fn parse_map_or_seq<'a>(lexer: &mut PeekableLexer<'a>) -> Result<ACF, String> {
+    // is already missing the first {
+
+    // you cannot mix map and seq in one entity
+    let is_map;
+    let mut entity;
+    match parse_map_or_seq_item(lexer, TokenKind::Colon)? {
+        Item::Seq(value) => {
+            is_map = false;
+            entity = ACF::Seq(vec![value]);
+            if parse_end_of_sequence(lexer, Some(TokenKind::BracketClose))? {
+                // just one item
+                parse_expect(lexer, TokenKind::BracketClose)?;
+                return Ok(entity);
+            };
+        }
+        Item::Map(key, value) => {
+            is_map = true;
+            entity = ACF::Map(Default::default());
+            let map_ref = entity.as_map_mut().expect("we just set this to map");
+            map_ref.insert(key, value);
+            if parse_end_of_sequence(lexer, Some(TokenKind::BracketClose))? {
+                // just one item
+                parse_expect(lexer, TokenKind::BracketClose)?;
+                return Ok(entity);
+            };
+        }
+    }
+
+    while let Some(token) = lexer.peek() {
+        dbg!(&token);
+        if token.as_ref().map(|x| x.kind()) == Ok(TokenKind::BracketClose) {
+            lexer.next();
+            break;
+        }
+        if is_map {
+            let (key, value) = parse_map_item(lexer, TokenKind::Colon)?;
+            let map_ref = entity.as_map_mut().expect("we just set this to map");
+            map_ref.insert(key, value);
+        } else {
+            let value = parse_value(lexer)?;
+            let seq_ref = entity.as_seq_mut().expect("we just set this to seq");
+            seq_ref.push(value);
+        }
+
+        if parse_end_of_sequence(lexer, Some(TokenKind::BracketClose))? {
+            break;
+        };
+    }
+
+    parse_expect(lexer, TokenKind::BracketClose)?;
+
+    Ok(entity)
+}
+
+fn parse_end_of_sequence<'a>(
+    lexer: &mut PeekableLexer<'a>,
+    end_token: Option<TokenKind>,
+) -> Result<bool, String> {
+    // comma
+    let peeked = lexer.peek();
+    let peeked_kind = peeked.as_ref().map(|x| x.as_ref().map(|y| y.kind()));
+    if end_token.is_none() && peeked.is_none() {
+        return Ok(true);
+    }
+    if end_token.is_some() && peeked_kind == Some(Ok(end_token.expect("checked is some"))) {
+        // no trailing comma
+        return Ok(true);
+    }
+    if peeked_kind == Some(Ok(TokenKind::Comma)) {
+        parse_expect(lexer, TokenKind::Comma)?;
+    }
+    Ok(false)
+}
+
+fn parse_map_item<'a>(
+    lexer: &mut PeekableLexer<'a>,
+    separator: TokenKind,
+) -> Result<(String, ACF), String> {
+    let key = parse_expect(lexer, TokenKind::String)?;
+    let Token::String(key) = key else {
+        unreachable!("parse_expect bug, expected string")
+    };
+    parse_expect(lexer, separator)?;
+    let value = parse_value(lexer)?;
+    dbg!(&value);
+
+    Ok((key.to_string(), value))
+}
+
+enum Item {
+    Map(String, ACF),
+    Seq(ACF),
+}
+
+fn parse_map_or_seq_item<'a>(
+    lexer: &mut PeekableLexer<'a>,
+    separator: TokenKind,
+) -> Result<Item, String> {
+    let value = parse_value(lexer)?;
+    match lexer.peek() {
+        Some(Ok(s)) if s.kind() == separator => {
+            let key = value
+                .into_string()
+                .ok_or_else(|| format!("unexpected token, expected String"))?;
+            lexer.next();
+            let value = parse_value(lexer)?;
+
+            Ok(Item::Map(key, value))
+        }
+        _ => return Ok(Item::Seq(value)),
+    }
 }
 
 #[test]
@@ -273,30 +430,68 @@ fn tokenize_with_numbers() {
     assert_eq!(expected, out.unwrap());
 }
 
+// #[test]
+// fn tokenize_this2() {
+//     // let data = r#"config1={value: 1, default: 12, yes: true}"#;
+//     // let data = r#"config1={a: "extra \"quote\""}"#;
+//     // let data = r#"config1={value: 1, default: 1_2, yes: true, number: 1.23},config2={DEFAULT: "testing"}"#;
+//     let data = r#"config={a: 1, b: 1.015, c: 3.1415, d: 10009, e: 0, f: -19.34, g: -2.17e-14, h: 1_2},cheese=1"#;
+//     let mut out = tokenize(data).spanned();
+
+//     while let Some((result, range)) = out.next() {
+//         println!("{:?}, {:?}", range, result.unwrap());
+//     }
+//     // let mut strings = Vec::new();
+//     // debug_visit_ast(data, &out, &mut strings);
+//     // let expected = vec![('m', "config1=testing"), ('k', "config1"), ('s', "testing")];
+
+//     // assert_eq!(expected, strings);
+//     panic!()
+// }
+
+#[cfg(test)]
+use crate::{acf_map, acf_seq};
+
 #[test]
-fn tokenize_this2() {
-    // let data = r#"config1={value: 1, default: 12, yes: true}"#;
-    // let data = r#"config1={a: "extra \"quote\""}"#;
-    // let data = r#"config1={value: 1, default: 1_2, yes: true, number: 1.23},config2={DEFAULT: "testing"}"#;
+fn parse_test_map_with_numbers() {
     let data = r#"config={a: 1, b: 1.015, c: 3.1415, d: 10009, e: 0, f: -19.34, g: -2.17e-14, h: 1_2},cheese=1"#;
-    let mut out = tokenize(data).spanned();
+    let expected = acf_map! {
+        "config" => acf_map! {
+            "a" => 1,
+            "b" => 1.015,
+            "c" => 3.1415,
+            "d" => 10009,
+            "e" => 0,
+            "f" => -19.34,
+            "g" => -2.17e-14,
+            "h" => 12,
+        },
+        "cheese" => 1
+    };
 
-    while let Some((result, range)) = out.next() {
-        println!("{:?}, {:?}", range, result.unwrap());
-    }
-    // let mut strings = Vec::new();
-    // debug_visit_ast(data, &out, &mut strings);
-    // let expected = vec![('m', "config1=testing"), ('k', "config1"), ('s', "testing")];
+    let lexer = tokenize(data);
 
-    // assert_eq!(expected, strings);
-    panic!()
+    assert_eq!(expected, parse(lexer).unwrap());
 }
 
 #[test]
-fn parse_test() {
-    let data = r#"config={a: 1, b: 1.015, c: 3.1415, d: 10009, e: 0, f: -19.34, g: -2.17e-14, h: 1_2},cheese=1"#;
+fn parse_test_seq_with_numbers() {
+    let data = r#"config={1, 1.015, 3.1415, 10009, 0, -19.34, -2.17e-14, 1_2},cheese=1,"#;
+    let expected = acf_map! {
+        "config" => acf_seq! {
+            1,
+            1.015,
+            3.1415,
+            10009,
+            0,
+            -19.34,
+            -2.17e-14,
+            12,
+        },
+        "cheese" => 1
+    };
+
     let lexer = tokenize(data);
 
-    dbg!(parse(lexer).unwrap());
-    panic!()
+    assert_eq!(expected, parse(lexer).unwrap());
 }

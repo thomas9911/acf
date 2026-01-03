@@ -155,6 +155,69 @@ impl ACF {
 
         Some(config_pointer)
     }
+
+    pub fn as_integer(&self) -> Option<i64> {
+        match self {
+            ACF::Integer(x) => Some(*x),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            ACF::Boolean(x) => Some(*x),
+            _ => None,
+        }
+    }
+
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            ACF::Float(x) => Some(x.into_inner()),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            ACF::String(x) => Some(x),
+            _ => None,
+        }
+    }
+
+    pub fn into_string(self) -> Option<String> {
+        match self {
+            ACF::String(x) => Some(x.to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn as_map(&self) -> Option<&StringMap<ACF>> {
+        match self {
+            ACF::Map(x) => Some(x),
+            _ => None,
+        }
+    }
+
+    pub fn as_map_mut(&mut self) -> Option<&mut StringMap<ACF>> {
+        match self {
+            ACF::Map(x) => Some(x),
+            _ => None,
+        }
+    }
+
+    pub fn as_seq(&self) -> Option<&Vec<ACF>> {
+        match self {
+            ACF::Seq(x) => Some(x),
+            _ => None,
+        }
+    }
+
+    pub fn as_seq_mut(&mut self) -> Option<&mut Vec<ACF>> {
+        match self {
+            ACF::Seq(x) => Some(x),
+            _ => None,
+        }
+    }
 }
 
 pub fn tokenized_to_config(input: &str, tokens: parser::ACF) -> ACF {
